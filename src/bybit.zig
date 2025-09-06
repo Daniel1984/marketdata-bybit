@@ -150,7 +150,7 @@ pub fn consume(self: *Self) !void {
                     }
 
                     if (parsed.value.object.get("topic")) |_| {
-                        // Transform Bybit format to match common format
+                        // Transform Bybit response data to match common format
                         const transformed_data = self.transformOrderbookData(msg.data) catch |err| {
                             std.log.warn("failed to transform orderbook data: {}", .{err});
                             continue;
