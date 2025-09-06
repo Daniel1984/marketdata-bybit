@@ -78,7 +78,7 @@ fn reconnect(self: *Self) void {
     std.log.err("failed to reconnect stream after {} attempts", .{attempts});
 }
 
-pub fn publishMessage(self: *Self, pld: types.MessageEnvelope) !void {
+pub fn publishMessage(self: *Self, pld: []u8) !void {
     const pld_json = try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(pld, .{})});
     defer self.allocator.free(pld_json);
 

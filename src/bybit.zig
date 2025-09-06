@@ -150,7 +150,14 @@ pub fn consume(self: *Self) !void {
                     }
 
                     if (parsed.value.object.get("topic")) |_| {
-                        self.stream.publishMessage(.{ .data = msg.data, .type = "orderbook", .source = "bybit" }) catch |err| {
+                        // Transform Bybit format to match common format
+                        const transformed_data = self.transformOrderbookData(msg.data) catch |err| {
+                            std.log.warn("failed to transform orderbook data: {}", .{err});
+                            continue;
+                        };
+                        defer self.allocator.free(transformed_data);
+
+                        self.stream.publishMessage(transformed_data) catch |err| {
                             std.log.warn("failed publishing msg: {}", .{err});
                         };
                         continue;
@@ -190,4 +197,43 @@ pub fn consume(self: *Self) !void {
     }
 
     std.log.info("WebSocket connection closed", .{});
+}
+
+fn transformOrderbookData(self: *Self, original_data: []const u8) ![]u8 {
+    const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, original_data, .{}) catch |err| {
+        std.log.warn("Failed to parse Bybit message for transformation: {}", .{err});
+        return err;
+    };
+    defer parsed.deinit();
+
+    // Clone the original structure
+    var root_obj = std.json.ObjectMap.init(self.allocator);
+    defer root_obj.deinit();
+
+    try root_obj.put("src", std.json.Value{ .string = "bybit" });
+    try root_obj.put("type", std.json.Value{ .string = "orderbook" });
+
+    if (parsed.value.object.get("ts")) |ts| {
+        try root_obj.put("ts", ts);
+    }
+
+    if (parsed.value.object.get("data")) |data_value| {
+        var data_obj = std.json.ObjectMap.init(self.allocator);
+        defer data_obj.deinit();
+
+        if (data_value.object.get("s")) |s| {
+            try root_obj.put("pair", s);
+        }
+
+        if (data_value.object.get("b")) |b| {
+            try root_obj.put("bids", b);
+        }
+
+        if (data_value.object.get("a")) |a| {
+            try root_obj.put("asks", a);
+        }
+    }
+
+    const root_json_value = std.json.Value{ .object = root_obj };
+    return try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(root_json_value, .{})});
 }
