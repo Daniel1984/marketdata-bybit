@@ -97,7 +97,7 @@ pub fn subscribeChannel(self: *Self, topics: []const []const u8) !void {
 }
 
 pub fn consume(self: *Self) !void {
-    try self.client.?.readTimeout(5000); // 5 second timeout
+    try self.client.?.readTimeout(2000);
     var ping_timer = try std.time.Timer.start();
     const ping_interval_ns = self.ping_interval * std.time.ns_per_ms;
 
