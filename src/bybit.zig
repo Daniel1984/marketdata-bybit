@@ -15,6 +15,7 @@ ping_timeout: u64,
 mutex: std.Thread.Mutex,
 client: ?ws.Client,
 stream: str.Self,
+subscription_topics: ?[]const []const u8,
 
 pub fn init(allocator: std.mem.Allocator, stream: str.Self) !Self {
     return Self{
@@ -25,6 +26,7 @@ pub fn init(allocator: std.mem.Allocator, stream: str.Self) !Self {
         .mutex = std.Thread.Mutex{},
         .client = null,
         .stream = stream,
+        .subscription_topics = null,
     };
 }
 
@@ -81,10 +83,19 @@ pub fn connectWebSocket(self: *Self) !void {
 }
 
 pub fn subscribeChannel(self: *Self, topics: []const []const u8) !void {
-    var args = try self.allocator.alloc([]const u8, topics.len);
+    self.subscription_topics = topics;
+    try self.sendSubscription();
+}
+
+fn sendSubscription(self: *Self) !void {
+    if (self.subscription_topics == null) {
+        return error.NoSubscriptionTopics;
+    }
+
+    var args = try self.allocator.alloc([]const u8, self.subscription_topics.?.len);
     defer self.allocator.free(args);
 
-    for (topics, 0..) |topic, i| {
+    for (self.subscription_topics.?, 0..) |topic, i| {
         args[i] = topic;
     }
 
@@ -94,6 +105,43 @@ pub fn subscribeChannel(self: *Self, topics: []const []const u8) !void {
 
     std.log.info("subscription payload: {s}", .{subscribe_json});
     try self.client.?.write(subscribe_json);
+}
+
+fn reconnect(self: *Self) !void {
+    self.deinitClient();
+
+    var retry_count: u32 = 0;
+    const max_retries = 5;
+    var backoff_ms: u64 = 1000; // Start with 1 second
+
+    while (retry_count < max_retries) {
+        std.log.info("Reconnection attempt {} of {}", .{ retry_count + 1, max_retries });
+
+        // wait before retry (exponential backoff)
+        if (retry_count > 0) {
+            std.log.info("Waiting {}ms before retry...", .{backoff_ms});
+            std.Thread.sleep(backoff_ms * std.time.ns_per_ms);
+            backoff_ms *= 2; // Double the backoff time
+        }
+
+        self.connectWebSocket() catch |reconnect_err| {
+            std.log.warn("Reconnection attempt {} failed: {}", .{ retry_count + 1, reconnect_err });
+            retry_count += 1;
+            continue;
+        };
+
+        self.sendSubscription() catch |sub_err| {
+            std.log.warn("Re-subscription attempt {} failed: {}", .{ retry_count + 1, sub_err });
+            retry_count += 1;
+            continue;
+        };
+
+        std.log.info("reconnected and re-subscribed successfully after {} attempts", .{retry_count + 1});
+        break;
+    } else {
+        std.log.err("failed to reconnect after {} attempts, giving up", .{max_retries});
+        return error.ReconnectionFailed;
+    }
 }
 
 pub fn consume(self: *Self) !void {
@@ -117,8 +165,9 @@ pub fn consume(self: *Self) !void {
         }
 
         const message = self.client.?.read() catch |err| {
-            std.log.err("failed reading raw message: {}", .{err});
-            return err; // exit consume loop on read failure
+            std.log.err("failed reading raw message: {} - attempting reconnection", .{err});
+            try self.reconnect();
+            continue;
         };
 
         if (message) |msg| {
@@ -157,6 +206,7 @@ pub fn consume(self: *Self) !void {
                         };
                         defer self.allocator.free(transformed_data);
 
+                        // std.debug.print(": transformed data :> {s}\n", .{transformed_data});
                         self.stream.publishMessage(transformed_data) catch |err| {
                             std.log.warn("failed publishing msg: {}", .{err});
                         };
